@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COVID-19 Epidemiology Dashboard</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { font-family: 'Sarabun', sans-serif; background-color: #f8f9fa; }
+        #map { height: 600px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border: 1px solid #ddd; }
+        .chart-container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .profile-img { width: 120px; height: 120px; object-fit: cover; border-radius: 50%; border: 4px solid #0d6efd; }
+        .filter-box { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <!-- ส่วนหัวและรูปโปรไฟล์ผู้จัดทำ -->
+        <div class="row align-items-center mb-4 filter-box">
+            <div class="col-md-2 text-center">
+                <!-- เปลี่ยน profile.jpg เป็นชื่อไฟล์รูปของคุณ -->
+                <img src="profile.jpg" onerror="this.src='https://via.placeholder.com/150?text=Your+Photo'" alt="Profile Picture" class="profile-img">
+                <div class="mt-2 fw-bold text-primary">ผู้จัดทำ: พุธิตา</div>
+            </div>
+            <div class="col-md-10">
+                <h2 class="text-primary">แดชบอร์ดระบาดวิทยา: สถานการณ์ระบาดของโรค COVID-19</h2>
+                <p class="mb-0 text-muted">แสดงข้อมูลการติดเชื้อระดับบุคคล (Spot map) และความหนาแน่นระดับจังหวัด (Choropleth)</p>
+            </div>
+        </div>
+
+        <!-- ตัวกรองข้อมูล (Filter) -->
+        <div class="row filter-box">
+            <div class="col-md-4">
+                <label class="form-label fw-bold">เลือกจังหวัด:</label>
+                <select id="provinceFilter" class="form-select"><option value="all">ทั้งหมด</option></select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label fw-bold">เพศ:</label>
+                <select id="genderFilter" class="form-select">
+                    <option value="all">ทั้งหมด</option>
+                    <option value="ชาย">ชาย</option>
+                    <option value="หญิง">หญิง</option>
+                </select>
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+                <button id="applyFilter" class="btn btn-primary w-100 fw-bold">อัปเดตข้อมูลบนแดชบอร์ด</button>
+            </div>
+        </div>
+
+        <!-- แผนที่ Esri ArcGIS -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="chart-container">
+                    <h5 class="mb-3 text-secondary">แผนที่การกระจายตัว (Esri ArcGIS World Services)</h5>
+                    <div id="map"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- กราฟแถวที่ 1 -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="chart-container">
+                    <canvas id="epiCurve"></canvas>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="chart-container">
+                    <canvas id="topProvChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- กราฟแถวที่ 2 -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="chart-container">
+                    <canvas id="ageChart"></canvas>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="chart-container">
+                    <canvas id="genderChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.3.2/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        // 1. ตั้งค่าแผนที่และเรียกใช้ Esri ArcGIS World Services
+        const map = L.map('map').setView([13.736717, 100.523186], 6);
+        
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DeLorme, NAVTEQ, USGS, Intermap, iPC, NRCAN, Esri Japan, METI, Esri China (Hong Kong), Esri (Thailand), TomTom, 2012'
+        }).addTo(map);
+
+        let geojsonLayer;
+        let spotLayerGroup = L.layerGroup().addTo(map);
+        let rawData = [];
+        let charts = {};
+
+        // 2. ดึงข้อมูลจากไฟล์ CSV
+        Papa.parse("final69_15.csv", {
+            download: true,
+            header: true,
+            skipEmptyLines: true,
+            complete: function(results) {
+                rawData = results.data;
+                initDashboard();
+            }
+        });
+
+        function initDashboard() {
+            // ดึงชื่อจังหวัดทั้งหมดใส่ใน Dropdown ตัวกรอง
+            const provinces = [...new Set(rawData.map(d => d.province_of_onset).filter(p => p))].sort();
+            const provSelect = document.getElementById('provinceFilter');
+            provinces.forEach(p => {
+                provSelect.innerHTML += `<option value="${p}">${p}</option>`;
+            });
+
+            document.getElementById('applyFilter').addEventListener('click', updateDashboard);
+            updateDashboard(); // แสดงผลครั้งแรก
+        }
+
+        function updateDashboard() {
+            const p = document.getElementById('provinceFilter').value;
+            const g = document.getElementById('genderFilter').value;
+
+            // กรองข้อมูลตามเงื่อนไข
+            let filtered = rawData.filter(d => d.province_of_onset);
+            if (p !== 'all') filtered = filtered.filter(d => d.province_of_onset === p);
+            if (g !== 'all') filtered = filtered.filter(d => d.sex === g);
+
+            renderCharts(filtered);
+            renderMap(filtered);
+        }
+
+        function createChart(ctxId, type, title, labels, data, colors) {
+            if (charts[ctxId]) charts[ctxId].destroy();
+            const ctx = document.getElementById(ctxId).getContext('2d');
+            charts[ctxId] = new Chart(ctx, {
+                type: type,
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: title,
+                        data: data,
+                        backgroundColor: colors,
+                        borderWidth: 1
+                    }]
+                },
+                options: { responsive: true, plugins: { title: { display: true, text: title, font: { size: 16 } } } }
+            });
+        }
+
+        function renderCharts(data) {
+            // กราฟ 1: Epidemic Curve
+            const dateCount = {};
+            data.forEach(d => { if(d.announce_date) dateCount[d.announce_date] = (dateCount[d.announce_date] || 0) + 1; });
+            const dates = Object.keys(dateCount).sort((a,b) => {
+                const [d1,m1,y1] = a.split('/');
+                const [d2,m2,y2] = b.split('/');
+                return new Date(y1,m1-1,d1) - new Date(y2,m2-1,d2);
+            });
+            createChart('epiCurve', 'line', 'Epidemic Curve (จำนวนผู้ป่วยรายวัน)', dates, dates.map(d => dateCount[d]), '#dc3545');
+
+            // กราฟ 2: Top 10 จังหวัด
+            const provCount = {};
+            data.forEach(d => { provCount[d.province_of_onset] = (provCount[d.province_of_onset] || 0) + 1; });
+            const topProvs = Object.keys(provCount).sort((a,b) => provCount[b] - provCount[a]).slice(0, 10);
+            createChart('topProvChart', 'bar', '10 อันดับจังหวัดที่มีผู้ติดเชื้อสูงสุด', topProvs, topProvs.map(p => provCount[p]), '#0d6efd');
+
+            // กราฟ 3: ช่วงอายุ
+            const ageGroup = {'0-18':0, '19-35':0, '36-50':0, '51-60':0, '60+':0};
+            data.forEach(d => {
+                const age = parseInt(d.age);
+                if(!isNaN(age)) {
+                    if(age<=18) ageGroup['0-18']++;
+                    else if(age<=35) ageGroup['19-35']++;
+                    else if(age<=50) ageGroup['36-50']++;
+                    else if(age<=60) ageGroup['51-60']++;
+                    else ageGroup['60+']++;
+                }
+            });
+            createChart('ageChart', 'bar', 'จำนวนผู้ป่วยแยกตามช่วงอายุ', Object.keys(ageGroup), Object.values(ageGroup), ['#ffc107','#20c997','#0dcaf0','#6f42c1','#adb5bd']);
+
+            // กราฟ 4: สัดส่วนเพศ
+            const genderCount = {'ชาย':0, 'หญิง':0};
+            data.forEach(d => { if(d.sex==='ชาย' || d.sex==='หญิง') genderCount[d.sex]++; });
+            createChart('genderChart', 'pie', 'สัดส่วนผู้ป่วยแยกตามเพศ', Object.keys(genderCount), Object.values(genderCount), ['#0d6efd','#d63384']);
+        }
+
+        function renderMap(data) {
+            const provCount = {};
+            data.forEach(d => { provCount[d.province_of_onset] = (provCount[d.province_of_onset] || 0) + 1; });
+
+            // ดึงพิกัดประเทศไทยมาทำแผนที่
+            fetch('https://raw.githubusercontent.com/apisit/thailand.json/master/thailand.json')
+            .then(res => res.json())
+            .then(geoData => {
+                if (geojsonLayer) map.removeLayer(geojsonLayer);
+                spotLayerGroup.clearLayers();
+
+                // สร้าง Choropleth Map ระดับจังหวัด
+                geojsonLayer = L.geoJSON(geoData, {
+                    style: feature => {
+                        const provName = feature.properties.name;
+                        const count = provCount[provName] || 0;
+                        const fillColor = count > 1000 ? '#800026' : count > 500 ? '#BD0026' : count > 200 ? '#E31A1C' :
+                                          count > 100 ? '#FC4E2A' : count > 50 ? '#FD8D3C' : count > 10 ? '#FEB24C' :
+                                          count > 0 ? '#FED976' : '#f4f4f4';
+                        return { fillColor: fillColor, weight: 1.5, color: '#666', fillOpacity: 0.6 };
+                    },
+                    onEachFeature: (feature, layer) => {
+                        const provName = feature.properties.name;
+                        const count = provCount[provName] || 0;
+                        layer.bindPopup(`<b>จังหวัด: ${provName}</b><br>จำนวนผู้ป่วย: ${count} ราย`);
+
+                        // สร้าง Spot Map พล็อตจุดผู้ป่วย (ระดับอำเภอ)
+                        if (count > 0) {
+                            const distCount = {};
+                            data.filter(d => d.province_of_onset === provName).forEach(d => {
+                                if(d.district_of_onset) distCount[d.district_of_onset] = (distCount[d.district_of_onset] || 0) + 1;
+                            });
+
+                            const center = layer.getBounds().getCenter();
+                            Object.keys(distCount).forEach(dist => {
+                                const latOffset = (Math.random() - 0.5) * 0.3;
+                                const lngOffset = (Math.random() - 0.5) * 0.3;
+                                const marker = L.circleMarker([center.lat + latOffset, center.lng + lngOffset], {
+                                    radius: Math.min(Math.max(distCount[dist] / 2, 4), 12),
+                                    fillColor: "#007bff", color: "#fff", weight: 1, fillOpacity: 0.8
+                                });
+                                marker.bindPopup(`<b>อำเภอ: ${dist}</b><br>จังหวัด: ${provName}<br>ผู้ป่วย: ${distCount[dist]} ราย`);
+                                spotLayerGroup.addLayer(marker);
+                            });
+                        }
+                    }
+                }).addTo(map);
+            });
+        }
+    </script>
+</body>
+</html>
